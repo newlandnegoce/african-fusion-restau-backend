@@ -108,12 +108,19 @@ def add_menu_item():
             return jsonify({"msg": "User not found"}), 404
         if not current_user.has_permission('add'):
             return jsonify({"msg": "Permission denied"}), 403
-        data = request.get_json(force=True)  # Force parsing even if Content-Type is slightly off
-        logging.debug(f"Received data: {data}")
+        # Vérifiez le corps brut avant parsing
+        raw_body = request.get_data(as_text=True)
+        logging.debug(f"Raw request body: {raw_body}")
+        try:
+            data = request.get_json(force=True)
+        except Exception as json_error:
+            logging.error(f"Failed to parse JSON: {str(json_error)}")
+            return jsonify({"msg": "Invalid JSON format"}), 400
+        logging.debug(f"Parsed data: {data}")
         if not data or 'name' not in data or 'price' not in data:
             return jsonify({"msg": "Missing required fields: 'name' and 'price' are required"}), 400
         try:
-            price = float(data['price'])  # Assurez-vous que price est un float
+            price = float(data['price'])
         except (ValueError, TypeError):
             return jsonify({"msg": "Invalid price: must be a number"}), 400
         new_item = MenuItem(name=data['name'], description=data.get('description', ''), price=price)
