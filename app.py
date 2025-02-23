@@ -4,6 +4,8 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from flask_cors import CORS
+import logging
+logging.basicConfig(level=logging.DEBUG)
 
 app = Flask(__name__)
 CORS(app)
@@ -92,18 +94,27 @@ def get_menu():
     items = MenuItem.query.all()
     return jsonify([{"id": item.id, "name": item.name, "description": item.description, "price": item.price} for item in items]), 200
 
+import logging  # Ajoute ceci au début du fichier, juste après les autres imports
+
 @app.route('/menu', methods=['POST'])
 @jwt_required()
 def add_menu_item():
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(int(current_user_id))
-    if not current_user.has_permission('add'):
-        return jsonify({"msg": "Permission denied"}), 403
-    data = request.get_json()
-    new_item = MenuItem(name=data['name'], description=data.get('description', ''), price=data['price'])
-    db.session.add(new_item)
-    db.session.commit()
-    return jsonify({"msg": "Menu item added successfully"}), 201
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(int(current_user_id))
+        if not current_user.has_permission('add'):
+            return jsonify({"msg": "Permission denied"}), 403
+        data = request.get_json()
+        logging.debug(f"Received data: {data}")
+        if not data or 'name' not in data or 'price' not in data:
+            return jsonify({"msg": "Missing required fields: 'name' and 'price' are required"}), 400
+        new_item = MenuItem(name=data['name'], description=data.get('description', ''), price=data['price'])
+        db.session.add(new_item)
+        db.session.commit()
+        return jsonify({"msg": "Menu item added successfully"}), 201
+    except Exception as e:
+        logging.error(f"Error in add_menu_item: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
 @app.route('/reset_db', methods=['POST'])
 def reset_db():
