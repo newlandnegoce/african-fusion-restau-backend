@@ -1,9 +1,9 @@
-import os
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from flask_cors import CORS
+import os
 
 app = Flask(__name__)
 CORS(app)
@@ -13,6 +13,27 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
+
+# Modèles (User et MenuItem restent identiques)
+
+# Routes (inchangées)
+
+def init_db():
+    with app.app_context():
+        db.create_all()  # Crée toutes les tables définies dans les modèles
+        print("Database tables created")  # Log pour confirmer
+
+# Appelez init_db() au démarrage
+init_db()
+
+if __name__ == '__main__':
+    app.run(debug=True, host='0.0.0.0', port=5000)
+    @app.route('/reset_db', methods=['POST'])
+def reset_db():
+    with app.app_context():
+        db.drop_all()  # Supprime toutes les tables existantes
+        db.create_all()  # Recrée les tables
+        return jsonify({"msg": "Database reset and tables created"}), 200
 
 # Le reste du code (User, MenuItem, routes) reste identique au précédent message
 
