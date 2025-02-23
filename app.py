@@ -100,15 +100,23 @@ import logging  # Ajoute ceci au début du fichier, juste après les autres impo
 @jwt_required()
 def add_menu_item():
     try:
+        logging.debug(f"Authorization header: {request.headers.get('Authorization')}")
         current_user_id = get_jwt_identity()
+        logging.debug(f"Current user ID: {current_user_id}")
         current_user = User.query.get(int(current_user_id))
+        if not current_user:
+            return jsonify({"msg": "User not found"}), 404
         if not current_user.has_permission('add'):
             return jsonify({"msg": "Permission denied"}), 403
-        data = request.get_json()
+        data = request.get_json(force=True)  # Force parsing even if Content-Type is slightly off
         logging.debug(f"Received data: {data}")
         if not data or 'name' not in data or 'price' not in data:
             return jsonify({"msg": "Missing required fields: 'name' and 'price' are required"}), 400
-        new_item = MenuItem(name=data['name'], description=data.get('description', ''), price=data['price'])
+        try:
+            price = float(data['price'])  # Assurez-vous que price est un float
+        except (ValueError, TypeError):
+            return jsonify({"msg": "Invalid price: must be a number"}), 400
+        new_item = MenuItem(name=data['name'], description=data.get('description', ''), price=price)
         db.session.add(new_item)
         db.session.commit()
         return jsonify({"msg": "Menu item added successfully"}), 201
