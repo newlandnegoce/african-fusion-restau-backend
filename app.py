@@ -1,9 +1,9 @@
+import os
 from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from flask_cors import CORS
-import os
 
 app = Flask(__name__)
 CORS(app)
@@ -14,30 +14,6 @@ db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 
-# Modèles (User et MenuItem restent identiques)
-
-# Routes (inchangées)
-
-def init_db():
-    with app.app_context():
-        db.create_all()  # Crée toutes les tables définies dans les modèles
-        print("Database tables created")  # Log pour confirmer
-
-# Appelez init_db() au démarrage
-init_db()
-
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
-    @app.route('/reset_db', methods=['POST'])
-def reset_db():
-    with app.app_context():
-        db.drop_all()  # Supprime toutes les tables existantes
-        db.create_all()  # Recrée les tables
-        return jsonify({"msg": "Database reset and tables created"}), 200
-
-# Le reste du code (User, MenuItem, routes) reste identique au précédent message
-
-# Modèle Utilisateur
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -63,14 +39,12 @@ class User(db.Model):
             return True
         return False
 
-# Modèle Plat
 class MenuItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.String(200))
     price = db.Column(db.Float, nullable=False)
 
-# Routes Utilisateur
 @app.route('/register', methods=['POST'])
 @jwt_required()
 def register():
@@ -113,7 +87,6 @@ def init_super_admin():
             return jsonify({"msg": "Super Admin created"}), 201
         return jsonify({"msg": "Super Admin already exists"}), 400
 
-# Routes Menu
 @app.route('/menu', methods=['GET'])
 def get_menu():
     items = MenuItem.query.all()
@@ -132,10 +105,18 @@ def add_menu_item():
     db.session.commit()
     return jsonify({"msg": "Menu item added successfully"}), 201
 
+@app.route('/reset_db', methods=['POST'])
+def reset_db():
+    with app.app_context():
+        db.drop_all()
+        db.create_all()
+        return jsonify({"msg": "Database reset and tables created"}), 200
+
 def init_db():
     with app.app_context():
         db.create_all()
 
+init_db()  # Appelé au démarrage
+
 if __name__ == '__main__':
-    init_db()
     app.run(debug=True, host='0.0.0.0', port=5000)
