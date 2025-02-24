@@ -6,7 +6,6 @@ from flask_jwt_extended import JWTManager, jwt_required, create_access_token, ge
 from flask_cors import CORS
 import logging
 from sqlalchemy import text
-from datetime import datetime
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://african-fusion-restau-frontend.netlify.app"]}})
@@ -19,7 +18,7 @@ jwt = JWTManager(app)
 
 logging.basicConfig(level=logging.DEBUG)
 
-# Modèles de base de données
+# Modèles
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -78,20 +77,29 @@ class Stock(db.Model):
     ingredient = db.Column(db.String(100), unique=True, nullable=False)
     quantity = db.Column(db.Integer, nullable=False)
 
-# Initialisation et migration de la base
+# Initialisation et migration robuste
 def init_db():
     with app.app_context():
+        # Crée toutes les tables définies
         db.create_all()
         logging.debug("Database tables created")
-        try:
-            db.session.execute(text("SELECT category FROM menu_item LIMIT 1"))
-        except Exception:
-            logging.debug("Adding category column to menu_item table")
-            db.session.execute(text("ALTER TABLE menu_item ADD COLUMN category VARCHAR(50) DEFAULT 'Plat Principal'"))
-            db.session.commit()
-            logging.debug("Column category added successfully")
 
-# Endpoints
+        # Vérifie et ajoute la colonne 'category' si elle n'existe pas
+        inspector = db.inspect(db.engine)
+        columns = [col['name'] for col in inspector.get_columns('menu_item')]
+        if 'category' not in columns:
+            logging.debug("Adding 'category' column to menu_item table")
+            try:
+                db.session.execute(text("ALTER TABLE menu_item ADD COLUMN category VARCHAR(50) DEFAULT 'Plat Principal'"))
+                db.session.commit()
+                logging.debug("Column 'category' added successfully")
+            except Exception as e:
+                logging.error(f"Failed to add 'category' column: {str(e)}")
+                db.session.rollback()
+        else:
+            logging.debug("'category' column already exists in menu_item table")
+
+# Routes
 @app.route('/register', methods=['POST'])
 @jwt_required()
 def register():
@@ -158,7 +166,7 @@ def add_order():
     if current_user.role not in ['serveur', 'super_admin']:
         return jsonify({"msg": "Permission denied"}), 403
     data = request.get_json()
-    items = data['items']  # Format attendu : "Plat x Quantité"
+    items = data['items']
     total_price = sum(MenuItem.query.filter_by(name=item.split(' x')[0]).first().price * int(item.split(' x')[1]) for item in items.split(', '))
     new_order = Order(table_id=data.get('table_id'), items=items, total_price=total_price)
     db.session.add(new_order)
@@ -213,6 +221,7 @@ def add_stock():
     db.session.commit()
     return jsonify({"msg": "Stock added successfully"}), 201
 
+# Initialisation au démarrage
 init_db()
 
 if __name__ == '__main__':
