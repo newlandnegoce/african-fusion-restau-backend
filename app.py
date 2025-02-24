@@ -222,7 +222,31 @@ def add_stock():
     return jsonify({"msg": "Stock added successfully"}), 201
 
 # Initialisation au démarrage
-init_db()
+def init_db():
+    with app.app_context():
+        # Crée toutes les tables définies
+        db.create_all()
+        logging.debug("Database tables created")
+
+        # Vérifie et ajoute la colonne 'category' si elle n'existe pas
+        inspector = db.inspect(db.engine)
+        columns = [col['name'] for col in inspector.get_columns('menu_item')]
+        if 'category' not in columns:
+            logging.debug("Adding 'category' column to menu_item table")
+            try:
+                db.session.execute(text("ALTER TABLE menu_item ADD COLUMN category VARCHAR(50) DEFAULT 'Plat Principal'"))
+                db.session.commit()
+                logging.info("Column 'category' added successfully")
+            except Exception as e:
+                logging.error(f"Failed to add 'category' column: {str(e)}")
+                db.session.rollback()
+                # Forcer une réinitialisation si nécessaire (supprime les données existantes)
+                logging.warning("Attempting to recreate menu_item table due to migration failure")
+                db.session.execute(text("DROP TABLE IF EXISTS menu_item"))
+                db.create_all()
+                logging.info("menu_item table recreated with 'category' column")
+        else:
+            logging.debug("'category' column already exists in menu_item table")
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
