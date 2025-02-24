@@ -6,10 +6,11 @@ from flask_jwt_extended import JWTManager, jwt_required, create_access_token, ge
 from flask_cors import CORS
 import logging
 from sqlalchemy import text
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://african-fusion-restau-frontend.netlify.app"]}})
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///restaurant.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///african_fusion.db')
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'votre-secret-key-super-secret')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
@@ -18,19 +19,25 @@ jwt = JWTManager(app)
 
 logging.basicConfig(level=logging.DEBUG)
 
-# Modèle Utilisateur
+# Modèles de base de données
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     role = db.Column(db.String(20), nullable=False)
+    full_name = db.Column(db.String(100), default='')
+    phone = db.Column(db.String(20), default='')
+    email = db.Column(db.String(120), unique=True, nullable=False)
+    address = db.Column(db.String(200), default='')
 
-    def __init__(self, username, email, password, role):
+    def __init__(self, username, email, password, role, full_name='', phone='', address=''):
         self.username = username
         self.email = email
         self.password = bcrypt.generate_password_hash(password).decode('utf-8')
         self.role = role
+        self.full_name = full_name
+        self.phone = phone
+        self.address = address
 
     def check_password(self, password):
         return bcrypt.check_password_hash(self.password, password)
@@ -40,26 +47,36 @@ class User(db.Model):
             return True
         elif self.role == 'admin' and action in ['add', 'view']:
             return True
-        elif self.role == 'user' and action == 'view':
+        elif self.role in ['serveur', 'cuisine'] and action == 'view':
             return True
         return False
 
-# Modèle Emplacement (équivalent des propriétés)
-class Location(db.Model):
+class Order(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)
-    capacity = db.Column(db.Integer, nullable=False)
-    availability = db.Column(db.Boolean, default=True)
-    description = db.Column(db.String(200))
+    order_time = db.Column(db.String(50), default=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    table_id = db.Column(db.Integer)
+    items = db.Column(db.Text, nullable=False)
+    status = db.Column(db.String(20), default='Commande reçue')
+    total_price = db.Column(db.Float)
 
-# Modèle Proposition (réservations ou précommandes)
-class Proposal(db.Model):
+class MenuItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    location_id = db.Column(db.Integer, db.ForeignKey('location.id'), nullable=False)
-    customer_name = db.Column(db.String(100), nullable=False)
-    customer_email = db.Column(db.String(120))
-    status = db.Column(db.String(20), default='pending')  # pending, confirmed, cancelled
-    reservation_date = db.Column(db.String(50))
+    name = db.Column(db.String(100), unique=True, nullable=False)
+    price = db.Column(db.Float, nullable=False)
+    category = db.Column(db.String(50), default='Plat Principal')
+
+class Payment(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    order_id = db.Column(db.Integer, db.ForeignKey('order.id'), nullable=False)
+    amount = db.Column(db.Float, nullable=False)
+    status = db.Column(db.String(20), default='En attente')
+    method = db.Column(db.String(20))
+    payment_date = db.Column(db.String(50), default=datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+class Stock(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ingredient = db.Column(db.String(100), unique=True, nullable=False)
+    quantity = db.Column(db.Integer, nullable=False)
 
 # Initialisation et migration de la base
 def init_db():
@@ -68,14 +85,13 @@ def init_db():
         logging.debug("Database tables created")
         try:
             db.session.execute(text("SELECT category FROM menu_item LIMIT 1"))
-        except Exception as e:
-            if "UndefinedColumn" in str(e):
-                logging.debug("Adding category column to menu_item table")
-                db.session.execute(text("ALTER TABLE menu_item ADD COLUMN category VARCHAR(50) DEFAULT 'Plat Principal'"))
-                db.session.commit()
-                logging.debug("Column category added successfully")
+        except Exception:
+            logging.debug("Adding category column to menu_item table")
+            db.session.execute(text("ALTER TABLE menu_item ADD COLUMN category VARCHAR(50) DEFAULT 'Plat Principal'"))
+            db.session.commit()
+            logging.debug("Column category added successfully")
 
-# Routes
+# Endpoints
 @app.route('/register', methods=['POST'])
 @jwt_required()
 def register():
@@ -84,7 +100,15 @@ def register():
     if not current_user.has_permission('add'):
         return jsonify({"msg": "Permission denied"}), 403
     data = request.get_json()
-    new_user = User(username=data['username'], email=data['email'], password=data['password'], role=data['role'])
+    new_user = User(
+        username=data['username'],
+        email=data['email'],
+        password=data['password'],
+        role=data['role'],
+        full_name=data.get('full_name', ''),
+        phone=data.get('phone', ''),
+        address=data.get('address', '')
+    )
     db.session.add(new_user)
     db.session.commit()
     return jsonify({"msg": "User created successfully"}), 201
@@ -95,7 +119,7 @@ def login():
     user = User.query.filter_by(email=auth['email']).first()
     if user and user.check_password(auth['password']):
         access_token = create_access_token(identity=str(user.id))
-        return jsonify(access_token=access_token), 200
+        return jsonify({"access_token": access_token, "role": user.role}), 200
     return jsonify({"msg": "Bad email or password"}), 401
 
 @app.route('/users', methods=['GET'])
@@ -103,82 +127,91 @@ def login():
 def get_users():
     current_user_id = get_jwt_identity()
     current_user = User.query.get(int(current_user_id))
-    if current_user.has_permission('view'):
-        users = User.query.all()
-        return jsonify([{"id": user.id, "username": user.username, "email": user.email, "role": user.role} for user in users if current_user.role == 'super_admin' or user.role != 'super_admin']), 200
-    return jsonify({"msg": "Permission denied"}), 403
-
-@app.route('/users/<int:user_id>', methods=['DELETE'])
-@jwt_required()
-def delete_user(user_id):
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(int(current_user_id))
-    if not current_user or current_user.role != 'super_admin':
+    if not current_user.has_permission('view'):
         return jsonify({"msg": "Permission denied"}), 403
-    user_to_delete = User.query.get(user_id)
-    if not user_to_delete or (user_to_delete.role == 'super_admin' and user_to_delete.id == int(current_user_id)):
-        return jsonify({"msg": "Cannot delete"}), 403
-    db.session.delete(user_to_delete)
-    db.session.commit()
-    return jsonify({"msg": "User deleted successfully"}), 200
+    users = User.query.all()
+    return jsonify([{"id": u.id, "username": u.username, "role": u.role, "full_name": u.full_name, "phone": u.phone, "email": u.email, "address": u.address} for u in users]), 200
 
-@app.route('/locations', methods=['GET'])
-def get_locations():
-    locations = Location.query.all()
-    return jsonify([{"id": loc.id, "name": loc.name, "capacity": loc.capacity, "availability": loc.availability, "description": loc.description} for loc in locations]), 200
+@app.route('/menu', methods=['GET'])
+def get_menu():
+    items = MenuItem.query.all()
+    return jsonify([{"id": i.id, "name": i.name, "price": i.price, "category": i.category} for i in items]), 200
 
-@app.route('/locations', methods=['POST'])
+@app.route('/menu', methods=['POST'])
 @jwt_required()
-def add_location():
+def add_menu_item():
     current_user_id = get_jwt_identity()
     current_user = User.query.get(int(current_user_id))
     if not current_user.has_permission('add'):
         return jsonify({"msg": "Permission denied"}), 403
     data = request.get_json()
-    new_location = Location(name=data['name'], capacity=data['capacity'], availability=data.get('availability', True), description=data.get('description', ''))
-    db.session.add(new_location)
+    new_item = MenuItem(name=data['name'], price=data['price'], category=data.get('category', 'Plat Principal'))
+    db.session.add(new_item)
     db.session.commit()
-    return jsonify({"msg": "Location added successfully"}), 201
+    return jsonify({"msg": "Menu item added successfully"}), 201
 
-@app.route('/proposals', methods=['GET'])
+@app.route('/orders', methods=['POST'])
 @jwt_required()
-def get_proposals():
-    proposals = Proposal.query.all()
-    return jsonify([{"id": prop.id, "location_id": prop.location_id, "customer_name": prop.customer_name, "customer_email": prop.customer_email, "status": prop.status, "reservation_date": prop.reservation_date} for prop in proposals]), 200
+def add_order():
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(int(current_user_id))
+    if current_user.role not in ['serveur', 'super_admin']:
+        return jsonify({"msg": "Permission denied"}), 403
+    data = request.get_json()
+    items = data['items']  # Format attendu : "Plat x Quantité"
+    total_price = sum(MenuItem.query.filter_by(name=item.split(' x')[0]).first().price * int(item.split(' x')[1]) for item in items.split(', '))
+    new_order = Order(table_id=data.get('table_id'), items=items, total_price=total_price)
+    db.session.add(new_order)
+    db.session.commit()
+    return jsonify({"msg": "Order added successfully", "order_id": new_order.id}), 201
 
-@app.route('/proposals', methods=['POST'])
+@app.route('/orders', methods=['GET'])
 @jwt_required()
-def add_proposal():
+def get_orders():
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(int(current_user_id))
+    if not current_user.has_permission('view'):
+        return jsonify({"msg": "Permission denied"}), 403
+    orders = Order.query.all()
+    return jsonify([{"id": o.id, "order_time": o.order_time, "table_id": o.table_id, "items": o.items, "status": o.status, "total_price": o.total_price} for o in orders]), 200
+
+@app.route('/orders/<int:order_id>', methods=['PUT'])
+@jwt_required()
+def update_order(order_id):
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(int(current_user_id))
+    if current_user.role not in ['cuisine', 'super_admin']:
+        return jsonify({"msg": "Permission denied"}), 403
+    order = Order.query.get(order_id)
+    if not order:
+        return jsonify({"msg": "Order not found"}), 404
+    data = request.get_json()
+    order.status = data.get('status', order.status)
+    db.session.commit()
+    return jsonify({"msg": "Order updated successfully"}), 200
+
+@app.route('/stock', methods=['GET'])
+@jwt_required()
+def get_stock():
+    current_user_id = get_jwt_identity()
+    current_user = User.query.get(int(current_user_id))
+    if not current_user.has_permission('view'):
+        return jsonify({"msg": "Permission denied"}), 403
+    stock = Stock.query.all()
+    return jsonify([{"id": s.id, "ingredient": s.ingredient, "quantity": s.quantity} for s in stock]), 200
+
+@app.route('/stock', methods=['POST'])
+@jwt_required()
+def add_stock():
     current_user_id = get_jwt_identity()
     current_user = User.query.get(int(current_user_id))
     if not current_user.has_permission('add'):
         return jsonify({"msg": "Permission denied"}), 403
     data = request.get_json()
-    new_proposal = Proposal(
-        location_id=data['location_id'],
-        customer_name=data['customer_name'],
-        customer_email=data.get('customer_email', ''),
-        status=data.get('status', 'pending'),
-        reservation_date=data['reservation_date']
-    )
-    db.session.add(new_proposal)
+    new_stock = Stock(ingredient=data['ingredient'], quantity=data['quantity'])
+    db.session.add(new_stock)
     db.session.commit()
-    return jsonify({"msg": "Proposal added successfully"}), 201
-
-@app.route('/proposals/<int:proposal_id>', methods=['PUT'])
-@jwt_required()
-def update_proposal(proposal_id):
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(int(current_user_id))
-    if not current_user.has_permission('add'):
-        return jsonify({"msg": "Permission denied"}), 403
-    proposal = Proposal.query.get(proposal_id)
-    if not proposal:
-        return jsonify({"msg": "Proposal not found"}), 404
-    data = request.get_json()
-    proposal.status = data.get('status', proposal.status)
-    db.session.commit()
-    return jsonify({"msg": "Proposal updated successfully"}), 200
+    return jsonify({"msg": "Stock added successfully"}), 201
 
 init_db()
 
