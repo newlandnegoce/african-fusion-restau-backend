@@ -5,10 +5,10 @@ from flask_bcrypt import Bcrypt
 from flask_jwt_extended import JWTManager, jwt_required, create_access_token, get_jwt_identity
 from flask_cors import CORS
 import logging
-logging.basicConfig(level=logging.DEBUG)
+import json
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": ["http://localhost:3000", "https://african-fusion-restau-frontend.netlify.app"]}})
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///african_fusion.db')
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'votre-secret-key-super-secret')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -16,6 +16,10 @@ db = SQLAlchemy(app)
 bcrypt = Bcrypt(app)
 jwt = JWTManager(app)
 
+# Configuration des logs
+logging.basicConfig(level=logging.DEBUG)
+
+# Modèle Utilisateur
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(80), unique=True, nullable=False)
@@ -41,89 +45,125 @@ class User(db.Model):
             return True
         return False
 
+# Modèle Plat avec catégorie
 class MenuItem(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     name = db.Column(db.String(100), nullable=False)
     description = db.Column(db.String(200))
     price = db.Column(db.Float, nullable=False)
+    category = db.Column(db.String(50), default='Plat Principal')
 
+# Initialisation de la base de données
+def init_db():
+    with app.app_context():
+        db.create_all()
+        logging.debug("Database tables created")
+
+# Routes existantes et nouvelles
 @app.route('/register', methods=['POST'])
 @jwt_required()
 def register():
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(int(current_user_id))
-    if not current_user.has_permission('add'):
-        return jsonify({"msg": "Permission denied"}), 403
-    data = request.get_json()
-    new_user = User(username=data['username'], email=data['email'], password=data['password'], role=data['role'])
-    db.session.add(new_user)
-    db.session.commit()
-    return jsonify({"msg": "User created successfully"}), 201
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(int(current_user_id))
+        if not current_user.has_permission('add'):
+            return jsonify({"msg": "Permission denied"}), 403
+        data = request.get_json()
+        new_user = User(username=data['username'], email=data['email'], password=data['password'], role=data['role'])
+        db.session.add(new_user)
+        db.session.commit()
+        return jsonify({"msg": "User created successfully"}), 201
+    except Exception as e:
+        logging.error(f"Error in register: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
 @app.route('/login', methods=['POST'])
 def login():
-    auth = request.get_json()
-    user = User.query.filter_by(email=auth['email']).first()
-    if user and user.check_password(auth['password']):
-        access_token = create_access_token(identity=str(user.id))
-        return jsonify(access_token=access_token), 200
-    return jsonify({"msg": "Bad email or password"}), 401
+    try:
+        auth = request.get_json()
+        user = User.query.filter_by(email=auth['email']).first()
+        if user and user.check_password(auth['password']):
+            access_token = create_access_token(identity=str(user.id))
+            return jsonify(access_token=access_token), 200
+        return jsonify({"msg": "Bad email or password"}), 401
+    except Exception as e:
+        logging.error(f"Error in login: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
 @app.route('/users', methods=['GET'])
 @jwt_required()
 def get_users():
-    current_user_id = get_jwt_identity()
-    current_user = User.query.get(int(current_user_id))
-    if current_user.has_permission('view'):
-        users = User.query.all()
-        return jsonify([{"id": user.id, "username": user.username, "email": user.email, "role": user.role} for user in users if current_user.role == 'super_admin' or user.role != 'super_admin'])
-    return jsonify({"msg": "Permission denied"}), 403
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(int(current_user_id))
+        if current_user.has_permission('view'):
+            users = User.query.all()
+            return jsonify([{"id": user.id, "username": user.username, "email": user.email, "role": user.role} for user in users if current_user.role == 'super_admin' or user.role != 'super_admin'])
+        return jsonify({"msg": "Permission denied"}), 403
+    except Exception as e:
+        logging.error(f"Error in get_users: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
+
+@app.route('/users/<int:user_id>', methods=['DELETE'])
+@jwt_required()
+def delete_user(user_id):
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(int(current_user_id))
+        if not current_user or current_user.role != 'super_admin':
+            return jsonify({"msg": "Permission denied"}), 403
+        user_to_delete = User.query.get(user_id)
+        if not user_to_delete:
+            return jsonify({"msg": "User not found"}), 404
+        if user_to_delete.role == 'super_admin' and user_to_delete.id == int(current_user_id):
+            return jsonify({"msg": "Cannot delete yourself"}), 403
+        db.session.delete(user_to_delete)
+        db.session.commit()
+        return jsonify({"msg": "User deleted successfully"}), 200
+    except Exception as e:
+        logging.error(f"Error in delete_user: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
 @app.route('/init_super_admin', methods=['POST'])
 def init_super_admin():
-    with app.app_context():
-        if not User.query.filter_by(role='super_admin').first():
-            super_admin = User(username='superadmin', email='super@admin.com', password='admin123', role='super_admin')
-            db.session.add(super_admin)
-            db.session.commit()
-            return jsonify({"msg": "Super Admin created"}), 201
-        return jsonify({"msg": "Super Admin already exists"}), 400
+    try:
+        with app.app_context():
+            if not User.query.filter_by(role='super_admin').first():
+                super_admin = User(username='superadmin', email='super@admin.com', password='admin123', role='super_admin')
+                db.session.add(super_admin)
+                db.session.commit()
+                return jsonify({"msg": "Super Admin created"}), 201
+            return jsonify({"msg": "Super Admin already exists"}), 400
+    except Exception as e:
+        logging.error(f"Error in init_super_admin: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
 @app.route('/menu', methods=['GET'])
 def get_menu():
-    items = MenuItem.query.all()
-    return jsonify([{"id": item.id, "name": item.name, "description": item.description, "price": item.price} for item in items]), 200
-
-import logging  # Ajoute ceci au début du fichier, juste après les autres imports
+    try:
+        items = MenuItem.query.all()
+        return jsonify([{"id": item.id, "name": item.name, "description": item.description, "price": item.price, "category": item.category} for item in items]), 200
+    except Exception as e:
+        logging.error(f"Error in get_menu: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
 @app.route('/menu', methods=['POST'])
 @jwt_required()
 def add_menu_item():
     try:
-        logging.debug(f"Authorization header: {request.headers.get('Authorization')}")
         current_user_id = get_jwt_identity()
-        logging.debug(f"Current user ID: {current_user_id}")
         current_user = User.query.get(int(current_user_id))
-        if not current_user:
-            return jsonify({"msg": "User not found"}), 404
         if not current_user.has_permission('add'):
             return jsonify({"msg": "Permission denied"}), 403
-        # Vérifiez le corps brut avant parsing
-        raw_body = request.get_data(as_text=True)
-        logging.debug(f"Raw request body: {raw_body}")
-        try:
-            data = request.get_json(force=True)
-        except Exception as json_error:
-            logging.error(f"Failed to parse JSON: {str(json_error)}")
-            return jsonify({"msg": "Invalid JSON format"}), 400
-        logging.debug(f"Parsed data: {data}")
+        data = request.get_json()
         if not data or 'name' not in data or 'price' not in data:
             return jsonify({"msg": "Missing required fields: 'name' and 'price' are required"}), 400
-        try:
-            price = float(data['price'])
-        except (ValueError, TypeError):
-            return jsonify({"msg": "Invalid price: must be a number"}), 400
-        new_item = MenuItem(name=data['name'], description=data.get('description', ''), price=price)
+        new_item = MenuItem(
+            name=data['name'],
+            description=data.get('description', ''),
+            price=float(data['price']),
+            category=data.get('category', 'Plat Principal')
+        )
         db.session.add(new_item)
         db.session.commit()
         return jsonify({"msg": "Menu item added successfully"}), 201
@@ -131,18 +171,45 @@ def add_menu_item():
         logging.error(f"Error in add_menu_item: {str(e)}")
         return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
-@app.route('/reset_db', methods=['POST'])
-def reset_db():
-    with app.app_context():
-        db.drop_all()
-        db.create_all()
-        return jsonify({"msg": "Database reset and tables created"}), 200
+@app.route('/menu/<int:item_id>', methods=['DELETE'])
+@jwt_required()
+def delete_menu_item(item_id):
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(int(current_user_id))
+        if not current_user.has_permission('add'):
+            return jsonify({"msg": "Permission denied"}), 403
+        item = MenuItem.query.get(item_id)
+        if not item:
+            return jsonify({"msg": "Menu item not found"}), 404
+        db.session.delete(item)
+        db.session.commit()
+        return jsonify({"msg": "Menu item deleted successfully"}), 200
+    except Exception as e:
+        logging.error(f"Error in delete_menu_item: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
-def init_db():
-    with app.app_context():
-        db.create_all()
+@app.route('/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    try:
+        current_user_id = get_jwt_identity()
+        current_user = User.query.get(int(current_user_id))
+        if not current_user or current_user.role != 'super_admin':
+            return jsonify({"msg": "Permission denied"}), 403
+        data = request.get_json()
+        if 'email' in data:
+            current_user.email = data['email']
+        if 'password' in data:
+            current_user.password = bcrypt.generate_password_hash(data['password']).decode('utf-8')
+        db.session.commit()
+        return jsonify({"msg": "Profile updated successfully"}), 200
+    except Exception as e:
+        logging.error(f"Error in update_profile: {str(e)}")
+        return jsonify({"msg": f"Server error: {str(e)}"}), 500
 
-init_db()  # Appelé au démarrage
+# Initialisation au démarrage
+init_db()
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
